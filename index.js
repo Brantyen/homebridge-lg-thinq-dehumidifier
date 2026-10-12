@@ -90,7 +90,7 @@ class Device {
     information.setCharacteristic(this.C.Manufacturer, 'LG')
       .setCharacteristic(this.C.Model, info.deviceInfo.modelName || 'DD201MWE0（待核實）')
       .setCharacteristic(this.C.SerialNumber, this.hap.uuid.generate(info.deviceId))
-      .setCharacteristic(this.C.FirmwareRevision, '0.1.0');
+      .setCharacteristic(this.C.FirmwareRevision, require('./package.json').version);
     const name = platform.config.name || 'LG 除濕機';
     const target = caps.range(profile);
     if (target && caps.property(profile, 'current')?.mode?.includes('r')) {
@@ -158,6 +158,11 @@ class Device {
     let service = this.accessory.getServiceById(type, subtype);
     if (!service) service = this.accessory.addService(type, name, subtype);
     service.setCharacteristic(this.C.Name, name);
+    // Apple「家庭」以 ConfiguredName 區分同一配件內的控制項。
+    // 首次升級補上名稱，之後保留使用者在「家庭」自訂的名稱。
+    if (!service.testCharacteristic(this.C.ConfiguredName)) {
+      service.addCharacteristic(this.C.ConfiguredName).setValue(name);
+    }
     this.wanted.add(service); return service;
   }
   bind(service, type, get, set, props) {

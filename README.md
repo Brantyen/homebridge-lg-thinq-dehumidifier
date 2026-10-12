@@ -1,6 +1,6 @@
 # LG ThinQ 除濕機 Homebridge 外掛
 
-這是提供給臺灣 LG ThinQ 帳號、以 DD201MWE0 為目標的 0.1.0 測試版。已完成程式及本機模擬測試，**尚未連接你的 LG 帳號、Raspberry Pi 或 DD201MWE0 實機，不代表已確認相容**。如果官方 API 不列出該設備或功能，程式不會改用猜測指令。
+這是提供給臺灣 LG ThinQ 帳號、以 DD201MWE0 為目標的 0.1.1 測試版。已完成程式及本機模擬測試，**尚未連接你的 LG 帳號、Raspberry Pi 或 DD201MWE0 實機，不代表已確認相容**。如果官方 API 不列出該設備或功能，程式不會改用猜測指令。
 
 ## 功能與限制
 
@@ -69,7 +69,7 @@ chmod 600 /var/lib/homebridge/lg-thinq-token.txt
 從這個 GitHub 儲存庫安裝時，可直接在 **Homebridge 網頁終端機**執行，然後跳至第 4 步：
 
 ```bash
-npm install -g https://github.com/Brantyen/homebridge-lg-thinq-dehumidifier/archive/refs/heads/main.tar.gz
+npm install --prefix /var/lib/homebridge https://github.com/Brantyen/homebridge-lg-thinq-dehumidifier/archive/refs/heads/main.tar.gz
 ```
 
 儲存庫名稱為 `homebridge-lg-thinq-dehumidifier`，程式套件名稱維持 `homebridge-lg-thinq-dd201`，因此下方診斷指令使用後者。以下為已有離線安裝包時的替代方式，不需重複安裝。
@@ -83,7 +83,7 @@ scp .\homebridge-lg-thinq-dd201-0.1.0.tgz 你的帳號@樹莓派IP:/tmp/
 回到 **Homebridge 網頁終端機**執行：
 
 ```bash
-npm install -g /tmp/homebridge-lg-thinq-dd201-0.1.0.tgz
+npm install --prefix /var/lib/homebridge /tmp/homebridge-lg-thinq-dd201-0.1.0.tgz
 ```
 
 請使用這個終端機，確保安裝到 Homebridge 使用的 Node.js 環境。若出現權限或找不到 npm 的錯誤，先保留完整錯誤訊息，不要反覆安裝到不同的 Node.js 目錄。本套件尚未發布到 npm，不能只搜尋外掛名稱安裝。
@@ -95,7 +95,7 @@ npm install -g /tmp/homebridge-lg-thinq-dd201-0.1.0.tgz
 ```bash
 cd /var/lib/homebridge
 export LG_THINQ_TOKEN_FILE=/var/lib/homebridge/lg-thinq-token.txt
-node "$(npm root -g)/homebridge-lg-thinq-dd201/diagnose.js"
+node /var/lib/homebridge/node_modules/homebridge-lg-thinq-dd201/diagnose.js
 ```
 
 診斷會在目前目錄產生 `lg-thinq-diagnostic.json`，含模型、功能能力及目前功能值，不含 PAT、裝置識別碼、家庭別名或憑證。終端機另印出本機設定用識別碼，分享終端機內容前請遮蔽。工具會在權杖旁保存固定診斷用客戶端識別碼，避免每次執行建立不同客戶端。
@@ -152,3 +152,11 @@ LG 回報的內部模型名稱可能不同於 DD201MWE0 商品型號；不要因
 本機驗證使用 Node.js 24.19.0、HAP-NodeJS 和模擬 LG 回應，涵蓋控制驗證、限流、不洩漏錯誤內容、未知狀態、序列控制、模式、通知、能力缺失、快取恢復及 MQTT 簽發／訂閱流程。沒有進行 Raspberry Pi、LG 雲端帳號或 Apple 手機端的端到端測試。
 
 官方來源與比對版本請見 `NOTICE.md`。
+
+## 0.1.1 更新
+
+保留全部風速、模式及滿水通知服務，補上 Apple「家庭」使用的 ConfiguredName，避免控制項全部顯示同一配件名稱。升級維持原有配件 UUID 與服務 subtype，不需刪除配件或重新配對；後續重啟保留使用者自行修改的控制項名稱。未知模式仍顯示「選項 1」等名稱，不猜測實際用途。
+
+官方 APT 環境請使用上方帶有 --prefix /var/lib/homebridge 的安裝指令，完成後重新啟動 Homebridge，再關閉並重開「家庭」。舊版 npm install -g 會裝到不同目錄；hb-service add 不接受本儲存庫壓縮檔網址。可執行 npm list --prefix /var/lib/homebridge homebridge-lg-thinq-dd201 確認版本為 0.1.1。
+
+11 項本機測試通過，含舊配件快取升級及自訂名稱保留。Apple「家庭」實際顯示仍待使用者更新後確認。
