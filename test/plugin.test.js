@@ -1,0 +1,138 @@
+'use strict';
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
+const hap = require('hap-nodejs');
+const { Device, Platform } = require('../index');
+const { ThinQClient } = require('../lib/client');
+const caps = require('../lib/capabilities');
+const enumProperty = values => ({ mode: ['r', 'w'], type: 'enum', value: { r: values, w: values } });
+function profile() {
+  return { notification: { push: ['WATER_IS_FULL'] }, property: {
+    operation: { dehumidifierOperationMode: enumProperty(['POWER_ON', 'POWER_OFF']) },
+    airFlow: { windStrengthLevel: enumProperty(['LOW', 'HIGH']) },
+    dehumidifierJobMode: { currentJobMode: enumProperty(['SMART_HUMIDITY', 'CLOTHES_DRY']) },
+    humidity: {
+      currentHumidity: { type: 'range', mode: ['r'], value: { r: { min: 0, max: 100 } } },
+      targetHumidity: { type: 'range', mode: ['r', 'w'], value: { w: { min: 30, max: 70, step: 5, except: [65] } } },
+    },
+  } };
+}
+function state() { return { operation: { dehumidifierOperationMode: 'POWER_ON' }, humidity: { currentHumidity: 63, targetHumidity: 50 }, airFlow: { windStrengthLevel: 'HIGH' }, dehumidifierJobMode: { currentJobMode: 'SMART_HUMIDITY' } }; }
+const log = { info() {}, warn() {}, error() {} };
+function setup(p = profile()) {
+  const platform = { api: { hap }, config: {}, log, interval: 120000, client: { state: async () => state(), control: async () => {} } };
+  const accessory = new hap.Accessory('測試除濕機', hap.uuid.generate('unit-test'));
+  const device = new Device(platform, accessory, { deviceId: 'test-id', deviceInfo: { modelName: '測試模型' } }, p);
+  return { device, accessory, platform };
+}
+
+test('濕度範圍、刻度、例外值與模式均依能力檢查', () => {
+  assert.deepEqual(caps.command(profile(), 'target', 55), { humidity: { targetHumidity: 55 } });
+  for (const value of [29, 71, 52, 65, NaN, '55']) assert.throws(() => caps.command(profile(), 'target', value));
+  assert.throws(() => caps.command(profile(), 'mode', 'UNKNOWN'));
+  assert.throws(() => caps.command(profile(), 'current', 50));
+});
+test('使用臺灣端點、每次不同訊息 ID、正確控制標頭與解包', async () => {
+  const requests = [];
+  const client = new ThinQClient({ token: 'test-secret' }, 'unique-client', async (url, options) => {
+    requests.push({ url, options }); return new Response(JSON.stringify({ response: { ok: true } }));
+  });
+  await client.control('a/b', { humidity: { targetHumidity: 50 } });
+  await client.list();
+  assert.equal(requests[0].url, 'https://api-kic.lgthinq.com/devices/a%2Fb/control');
+  assert.equal(requests[0].options.headers['x-country'], 'TW');
+  assert.equal(requests[0].options.headers['x-conditional-control'], 'true');
+  assert.notEqual(requests[0].options.headers['x-message-id'], requests[1].options.headers['x-message-id']);
+});
+test('API 錯誤不洩漏伺服器文字或權杖，並退避限流', async () => {
+  let count = 0;
+  const client = new ThinQClient({ token: 'secret' }, 'id', async () => {
+    count++; return new Response(JSON.stringify({ error: { code: '1306', message: 'secret' } }), { status: 429 });
+  });
+  await assert.rejects(client.list(), e => e.code === '1306' && !e.message.includes('secret'));
+  await assert.rejects(client.list(), /限流/); assert.equal(count, 1);
+});
+test('真實 HAP 服務可建立，未知、過期、離線濕度不會回報零', async t => {
+  const { device, accessory, platform } = setup(); t.after(() => device.stop());
+  assert.throws(() => device.humidity('current'));
+  await device.refresh(); assert.equal(device.humidity('current'), 63);
+  const service = accessory.getService(hap.Service.HumidifierDehumidifier);
+  assert.ok(service);
+  assert.deepEqual(service.getCharacteristic(hap.Characteristic.TargetHumidifierDehumidifierState).props.validValues, [2]);
+  device.lastUpdate = Date.now() - 400000; assert.throws(() => device.power());
+  platform.client.state = async () => { throw new Error('離線'); };
+  await assert.rejects(device.refresh()); assert.throws(() => device.humidity('current'));
+});
+test('控制序列化，失敗不阻擋下一指令，也不捏造新狀態', async t => {
+  const { device, platform } = setup(); t.after(() => device.stop()); await device.refresh();
+  const received = []; let running = 0;
+  platform.client.control = async (_id, payload) => {
+    assert.equal(running++, 0); await new Promise(resolve => setImmediate(resolve));
+    received.push(payload); running--; if (received.length === 1) throw new Error('拒絕');
+  };
+  const results = await Promise.allSettled([device.write('target', 45), device.write('target', 55)]);
+  assert.equal(results[0].status, 'rejected'); assert.equal(results[1].status, 'fulfilled');
+  assert.equal(device.humidity('target'), 50); assert.equal(received.length, 2);
+});
+test('模式與風速開關只選擇有效選項，關閉不會誤關主機', async t => {
+  const { device, accessory, platform } = setup(); t.after(() => device.stop()); await device.refresh();
+  const received = []; platform.client.control = async (_id, payload) => received.push(payload);
+  const mode = accessory.getServiceById(hap.Service.Switch, 'mode:CLOTHES_DRY').getCharacteristic(hap.Characteristic.On);
+  await assert.rejects(mode.handleSetRequest(false)); assert.equal(received.length, 0);
+  await mode.handleSetRequest(true); assert.deepEqual(received[0], { dehumidifierJobMode: { currentJobMode: 'CLOTHES_DRY' } });
+});
+test('滿水事件只接受目標設備，十秒後結束事件而非宣稱水箱已空', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { device } = setup(); t.after(() => device.stop()); device.pushStatus(true);
+  device.message({ deviceId: 'other', pushCode: 'WATER_IS_FULL' }); assert.equal(device.eventActive, false);
+  device.message({ deviceId: 'test-id', pushCode: 'WATER_IS_FULL' }); assert.equal(device.eventActive, true);
+  t.mock.timers.tick(10001); assert.equal(device.eventActive, false);
+  device.pushStatus(false);
+  assert.equal(device.notification.getCharacteristic(hap.Characteristic.StatusFault).value, 1);
+});
+test('缺少滿水能力不建立感測器；缺少目標濕度退回開關', t => {
+  const p = profile(); delete p.notification; delete p.property.humidity.targetHumidity;
+  const { device, accessory } = setup(p); t.after(() => device.stop());
+  assert.equal(device.notification, undefined);
+  assert.equal(accessory.getService(hap.Service.HumidifierDehumidifier), undefined);
+  assert.ok(accessory.getServiceById(hap.Service.Switch, 'power'));
+});
+test('快取配件恢復後保留識別資訊並重新綁定服務', async t => {
+  const { device, accessory } = setup(); t.after(() => device.stop());
+  const api = new EventEmitter(); api.hap = hap;
+  const platform = new Platform(log, {}, api); platform.configureAccessory(accessory);
+  assert.equal(accessory.getServiceById(hap.Service.HumidifierDehumidifier, 'main').getCharacteristic(hap.Characteristic.Name).getHandler, undefined);
+  const restored = new Device(device.platform, accessory, device.info, device.profile); t.after(() => restored.stop());
+  await restored.refresh(); assert.equal(restored.humidity('current'), 63);
+});
+test('MQTT 簽發、TLS 及訂閱使用官方協定，錯誤設備事件被過濾', async t => {
+  const forge = require('node-forge');
+  const { PushConnection } = require('../lib/push');
+  const { generateKeyPairSync } = require('node:crypto');
+  const key = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+  const cert = forge.pki.createCertificate(); cert.publicKey = forge.pki.publicKeyFromPem(key.publicKey);
+  cert.serialNumber = '01'; cert.validity.notBefore = new Date(); cert.validity.notAfter = new Date(Date.now() + 86400000);
+  cert.setSubject([{ name: 'commonName', value: 'test' }]); cert.setIssuer([{ name: 'commonName', value: 'test' }]);
+  cert.sign(forge.pki.privateKeyFromPem(key.privateKey));
+  const emitter = new EventEmitter(); emitter.end = () => {}; emitter.subscribe = (_topics, _options, cb) => cb(null);
+  let opts, messageCount = 0;
+  const connect = (_url, options) => { opts = options; return emitter; };
+  const client = { clientId: 'stable-id', request: async (_method, endpoint, body) => {
+    if (endpoint === 'route') return { mqttServer: 'mqtts://example.iot.ap-northeast-2.amazonaws.com:8883' };
+    if (endpoint === 'client/certificate') {
+      const csr = forge.pki.certificationRequestFromPem(`-----BEGIN CERTIFICATE REQUEST-----\n${body.csr}\n-----END CERTIFICATE REQUEST-----`);
+      assert.equal(csr.verify(), true);
+      return { result: { certificatePem: forge.pki.certificateToPem(cert), subscriptions: ['test/topic'] } };
+    }
+    return {};
+  } };
+  let online = false;
+  const push = new PushConnection(client, ['test-id'], () => messageCount++, v => { online = v; }, log, connect);
+  t.after(() => push.stop()); await push.start();
+  assert.equal(opts.rejectUnauthorized, true); assert.equal(opts.clientId, 'stable-id');
+  emitter.emit('connect'); assert.equal(online, true);
+  emitter.emit('message', 'test/topic', Buffer.from('{"deviceId":"other"}'));
+  emitter.emit('message', 'test/topic', Buffer.from('{"deviceId":"test-id","pushCode":"WATER_IS_FULL"}'));
+  assert.equal(messageCount, 1); emitter.emit('offline'); assert.equal(online, false);
+});
