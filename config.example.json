@@ -1,0 +1,6 @@
+{
+  "platform": "LGThinQDehumidifier",
+  "name": "LG 除濕機",
+  "tokenFile": "/var/lib/homebridge/lg-thinq-token.txt",
+  "pollInterval": 120
+}

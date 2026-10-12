@@ -1,0 +1,13 @@
+node_modules/
+coverage/
+*.log
+*.tgz
+*.zip
+.env
+.env.*
+lg-thinq-token*
+lg-thinq-diagnostic.json
+*diagnostic-client-id
+lg-thinq-dd201-client-id
+*.pem
+*.key

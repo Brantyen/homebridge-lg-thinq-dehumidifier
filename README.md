@@ -1,1 +1,154 @@
-# homebridge-lg-thinq-dehumidifier
+# LG ThinQ 除濕機 Homebridge 外掛
+
+這是提供給臺灣 LG ThinQ 帳號、以 DD201MWE0 為目標的 0.1.0 測試版。已完成程式及本機模擬測試，**尚未連接你的 LG 帳號、Raspberry Pi 或 DD201MWE0 實機，不代表已確認相容**。如果官方 API 不列出該設備或功能，程式不會改用猜測指令。
+
+## 功能與限制
+
+| 需求 | 實作方式 |
+| --- | --- |
+| 開關 | LG 官方 API 的電源指令 |
+| 目前濕度 | 讀取設備回報；無資料或離線顯示無回應 |
+| 目標濕度 | 依設備能力決定範圍、刻度及例外值；不寫死 30–70% |
+| 風速 | 每個實機允許的風速各有一個選項開關 |
+| 模式 | 每個實機允許的模式各有一個選項開關 |
+| 水箱滿通知 | 僅當實機能力包含 `WATER_IS_FULL` 時訂閱官方 MQTT 推播 |
+
+開啟模式或風速的選項開關代表「選擇此選項」。切換時開啟另一個選項即可；直接關閉目前選項會被拒絕，關機請使用主開關。部分模式可能禁止調整濕度或風速，這時會保留 LG 的拒絕結果，不擅自切換模式。
+
+目前使用雲端介面，需要網際網路。狀態每 120 秒輪詢，指令接受後約 3 秒讀回，雲端延遲仍可能更長。斷線及限流會退避重試，沒有自動重送控制指令。單一設定支援一台設備；帳號有多台除濕機時必須指定識別碼。
+
+HomeKit 的主設備類型為除濕機。LG 目前核實的欄位沒有壓縮機運轉狀態，因此 HomeKit 開機時的「閒置」只是介面相容用值，**不能用它判斷是否正在除濕**。若實機未開放目標濕度，會退回主開關與可讀的濕度感測器。
+
+### 滿水通知不是水位計
+
+「水箱滿通知事件」採用 HomeKit 接觸感測器。收到事件時開啟 10 秒，再結束事件；**結束不代表你已倒水或水箱未滿**。Apple 可能用「開啟／關閉」描述它，不能自訂成任意推播文字。十秒內重複事件會合併。
+
+事件通道斷線會標示故障。外掛關閉、網路中斷或重新啟動期間發生的滿水事件可能錯過；啟動時不能查詢既有滿水狀態。請保留 ThinQ App 的滿水提醒，直到實機驗證完成。
+
+## 從零安裝
+
+以下假設 Raspberry Pi 已安裝可用的 Raspberry Pi OS、有管理員權限，而且未用 Docker。若尚未有作業系統，先依 [Homebridge 官方安裝入口](https://homebridge.io/install/) 的 Raspberry Pi 映像說明建立系統；寫入映像會覆蓋目標記憶卡資料。已經有作業系統則可按以下步驟安裝。
+
+### 1. 安裝 Homebridge
+
+在 Raspberry Pi 終端機依序執行官方套件庫安裝指令：
+
+```bash
+curl -sSfL https://repo.homebridge.io/KEY.gpg | sudo gpg --dearmor | sudo tee /usr/share/keyrings/homebridge.gpg > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/homebridge.gpg] https://repo.homebridge.io stable main" | sudo tee /etc/apt/sources.list.d/homebridge.list > /dev/null
+sudo apt-get update
+sudo apt-get install homebridge
+hostname -I
+```
+
+瀏覽器開啟 `http://樹莓派IP:8581`，完成管理帳號設定。來源：[Homebridge 官方 Raspberry Pi 安裝說明](https://github.com/homebridge/homebridge/wiki/Install-Homebridge-on-Raspbian)。
+
+在 Homebridge 網頁的終端機確認 `node -v`，本外掛要求 Node.js 22 或更新版本，以及 Homebridge 1.8 或更新版本。這份安裝說明不適用於第一代 Pi／舊 Pi Zero 的舊執行環境。
+
+### 2. 取得 LG 個人存取權杖
+
+開啟 [LG PAT 管理頁](https://connect-pat.lgthinq.com/)，使用與 ThinQ App 相同的臺灣 LG 帳號登入，新增權杖。授予裝置清單、裝置狀態、裝置控制與推播通知權限。本外掛不使用耗電量查詢或狀態事件訂閱。
+
+權杖只輸入自己的 Raspberry Pi，不要貼到聊天、截圖或原始碼。PAT 建立流程可參考 [Home Assistant 官方 LG ThinQ 文件](https://www.home-assistant.io/integrations/lg_thinq/)。
+
+在 **Homebridge 網頁終端機**執行以下指令，提示出現時貼上 PAT，按 Enter。貼上內容不會顯示：
+
+```bash
+umask 077
+read -r -s -p "貼上 LG PAT：" LG_PAT
+printf '\n'
+printf '%s' "$LG_PAT" > /var/lib/homebridge/lg-thinq-token.txt
+unset LG_PAT
+chmod 600 /var/lib/homebridge/lg-thinq-token.txt
+```
+
+上述路徑適用於官方 Homebridge 服務的預設資料目錄。若你使用其他資料目錄，請同步修改所有 `tokenFile` 路徑。權杖檔案必須可由 Homebridge 服務帳號讀取。
+
+### 3. 上傳並安裝外掛
+
+從這個 GitHub 儲存庫安裝時，可直接在 **Homebridge 網頁終端機**執行，然後跳至第 4 步：
+
+```bash
+npm install -g https://github.com/Brantyen/homebridge-lg-thinq-dehumidifier/archive/refs/heads/main.tar.gz
+```
+
+儲存庫名稱為 `homebridge-lg-thinq-dehumidifier`，程式套件名稱維持 `homebridge-lg-thinq-dd201`，因此下方診斷指令使用後者。以下為已有離線安裝包時的替代方式，不需重複安裝。
+
+將交付的 `homebridge-lg-thinq-dd201-0.1.0.tgz` 放到 Pi 的 `/tmp/`。例如在 Windows 下載檔所在目錄開啟 PowerShell，將下方帳號和 IP 替換成實際值：
+
+```powershell
+scp .\homebridge-lg-thinq-dd201-0.1.0.tgz 你的帳號@樹莓派IP:/tmp/
+```
+
+回到 **Homebridge 網頁終端機**執行：
+
+```bash
+npm install -g /tmp/homebridge-lg-thinq-dd201-0.1.0.tgz
+```
+
+請使用這個終端機，確保安裝到 Homebridge 使用的 Node.js 環境。若出現權限或找不到 npm 的錯誤，先保留完整錯誤訊息，不要反覆安裝到不同的 Node.js 目錄。本套件尚未發布到 npm，不能只搜尋外掛名稱安裝。
+
+### 4. 先執行唯讀診斷
+
+同樣在 Homebridge 網頁終端機執行：
+
+```bash
+cd /var/lib/homebridge
+export LG_THINQ_TOKEN_FILE=/var/lib/homebridge/lg-thinq-token.txt
+node "$(npm root -g)/homebridge-lg-thinq-dd201/diagnose.js"
+```
+
+診斷會在目前目錄產生 `lg-thinq-diagnostic.json`，含模型、功能能力及目前功能值，不含 PAT、裝置識別碼、家庭別名或憑證。終端機另印出本機設定用識別碼，分享終端機內容前請遮蔽。工具會在權杖旁保存固定診斷用客戶端識別碼，避免每次執行建立不同客戶端。
+
+LG 回報的內部模型名稱可能不同於 DD201MWE0 商品型號；不要因此自行改寫模型能力。
+
+### 5. 加入設定與 Apple「家庭」
+
+在 Homebridge 設定頁，將下列物件加入既有 `platforms` 陣列。不要覆蓋整份設定，保留原有 `bridge` 和其他外掛：
+
+```json
+{
+  "platform": "LGThinQDehumidifier",
+  "name": "LG 除濕機",
+  "tokenFile": "/var/lib/homebridge/lg-thinq-token.txt",
+  "pollInterval": 120
+}
+```
+
+有多台除濕機時，增加 `"deviceId": "診斷顯示的目標設備識別碼"`。若需自訂模式中文名稱，可加 `"optionNames": { "CLOTHES_DRY": "乾衣" }`；未知代碼預設顯示「選項 1」等名稱，請依診斷能力表對照，避免錯譯。
+
+儲存並重啟 Homebridge。用 iPhone「家庭」新增配件，掃描 Homebridge 管理頁上的配對 QR 碼。若已配對 Homebridge，不需重複配對。
+
+在「水箱滿通知事件」的「狀態和通知」開啟活動通知。外出接收 HomeKit 通知需家庭中樞，例如相容的 HomePod 或 Apple TV，詳見 [Apple 通知設定說明](https://support.apple.com/zh-tw/105042)。實際顯示文字及可用通知選項由 Apple「家庭」決定。
+
+## 實機驗收
+
+1. 核對讀取濕度與 ThinQ App；容許輪詢與雲端延遲。
+2. 測試開關，確認設備確實動作。
+3. 設定一個實機允許的目標濕度，再從 App 比對。
+4. 逐一切換可用風速和模式；記錄哪些組合被 LG 拒絕。
+5. 讓設備正常使用至滿水，核對 ThinQ App、外掛紀錄與 Apple 通知。不要用灌水或破壞感測器方式測試。
+6. 重啟 Homebridge，確認配件不重複建立；暫時斷網後確認顯示故障，恢復網路後可讀回。
+
+在完成上述步驟前，這是待驗證測試版。回傳診斷 JSON 和已遮蔽識別資訊的錯誤紀錄，才能進一步確認 DD201MWE0 的實際相容性。
+
+## 常見錯誤
+
+| 錯誤 | 檢查方向 |
+| --- | --- |
+| 1103／1218、HTTP 401 | PAT 失效或錯誤；更新檔案後重啟 |
+| 1305／1308／1309、HTTP 403 | PAT 權限或帳號控制權限 |
+| 1306／HTTP 429 | 請等待退避，不要縮短輪詢或反覆重啟 |
+| 1219／1220／1221／2101 | 官方介面可能未開放此型號或功能 |
+| 1222 | 設備未連線 |
+| 2302／2304／2305 | 目前狀態、電源或模式不允許此指令 |
+| 找不到 WATER_IS_FULL | 官方能力未開放此通知；繼續使用 ThinQ App |
+| 滿水事件通道未就緒 | 檢查推播權限及對外 MQTT TLS 8883 連線；HTTPS 控制可能仍正常 |
+
+## 開發與驗證
+
+原始碼壓縮檔包含測試及相依版本鎖定；解壓後執行 `npm ci`、`npm test`。一般使用者安裝 `.tgz` 即可，不需要安裝測試相依套件。
+
+本機驗證使用 Node.js 24.19.0、HAP-NodeJS 和模擬 LG 回應，涵蓋控制驗證、限流、不洩漏錯誤內容、未知狀態、序列控制、模式、通知、能力缺失、快取恢復及 MQTT 簽發／訂閱流程。沒有進行 Raspberry Pi、LG 雲端帳號或 Apple 手機端的端到端測試。
+
+官方來源與比對版本請見 `NOTICE.md`。
