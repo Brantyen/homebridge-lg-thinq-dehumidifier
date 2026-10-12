@@ -106,6 +106,23 @@ test('快取配件恢復後保留識別資訊並重新綁定服務', async t => 
   const restored = new Device(device.platform, accessory, device.info, device.profile); t.after(() => restored.stop());
   await restored.refresh(); assert.equal(restored.humidity('current'), 63);
 });
+test('舊版配件升級補齊控制項名稱，保留全部服務與使用者改名', async t => {
+  const { device, accessory, platform } = setup(); t.after(() => device.stop());
+  const services = accessory.services.filter(s => s.UUID !== hap.Service.AccessoryInformation.UUID);
+  assert.equal(services.length, 6);
+  for (const s of services) s.removeCharacteristic(s.getCharacteristic(hap.Characteristic.ConfiguredName));
+  const restoredAccessory = hap.Accessory.deserialize(hap.Accessory.serialize(accessory));
+  const restored = new Device(platform, restoredAccessory, device.info, device.profile); t.after(() => restored.stop());
+  assert.equal(restoredAccessory.UUID, accessory.UUID);
+  assert.deepEqual(restoredAccessory.services.map(s => [s.UUID, s.subtype]), accessory.services.map(s => [s.UUID, s.subtype]));
+  assert.deepEqual(restoredAccessory.services.filter(s => s.subtype).map(s => s.getCharacteristic(hap.Characteristic.ConfiguredName).value),
+    ['LG 除濕機', '風速 低速', '風速 高速', '模式 智慧除濕', '模式 衣物乾燥', '水箱滿通知事件']);
+  const fan = restoredAccessory.getServiceById(hap.Service.Switch, 'fan:LOW');
+  await fan.getCharacteristic(hap.Characteristic.ConfiguredName).handleSetRequest('我的低速');
+  const again = new Device(platform, restoredAccessory, device.info, device.profile); t.after(() => again.stop());
+  assert.equal(fan.getCharacteristic(hap.Characteristic.ConfiguredName).value, '我的低速');
+});
+
 test('MQTT 簽發、TLS 及訂閱使用官方協定，錯誤設備事件被過濾', async t => {
   const forge = require('node-forge');
   const { PushConnection } = require('../lib/push');
