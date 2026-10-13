@@ -17,7 +17,7 @@ const modelLabels = {
   DHUM_231006_WW: {
     SMART_HUMIDITY: '智慧除濕 Plus', QUIET_HUMIDITY: '靜音除濕',
     RAPID_HUMIDITY: '衣物乾燥', INTENSIVE_DRY: '烘鞋／衣櫥',
-    MID: '中', POWER: 'Turbo', AIR_CLEAN: 'AIR_CLEAN（App 未列出）',
+    MID: '中', POWER: 'Turbo', AIR_CLEAN: '自動清潔',
   },
 };
 
