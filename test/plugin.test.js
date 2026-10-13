@@ -160,6 +160,39 @@ test('濕度作為主除濕機與感測器輸出，舊配件升級保留控制�
   assert.equal(cached.services.filter(s => s.UUID === hap.Service.HumiditySensor.UUID).length, 1);
 });
 
+test('DD201 模式名稱遷移保留識別與自訂名稱，控制仍送出核對過的代碼', async t => {
+  const p = profile();
+  p.property.dehumidifierJobMode.currentJobMode = enumProperty(['AIR_CLEAN', 'QUIET_HUMIDITY', 'RAPID_HUMIDITY', 'INTENSIVE_DRY', 'SMART_HUMIDITY']);
+  p.property.airFlow.windStrengthLevel = enumProperty(['AUTO', 'POWER', 'MID', 'LOW', 'HIGH']);
+  const { device, accessory, platform } = setup(p); t.after(() => device.stop());
+  const air = accessory.getServiceById(hap.Service.Switch, 'mode:AIR_CLEAN');
+  air.setCharacteristic(hap.Characteristic.Name, '模式 選項 1').setCharacteristic(hap.Characteristic.ConfiguredName, '模式 選項 1');
+  const power = accessory.getServiceById(hap.Service.Switch, 'fan:POWER');
+  power.setCharacteristic(hap.Characteristic.Name, '風速 選項 2').setCharacteristic(hap.Characteristic.ConfiguredName, '風速 選項 2');
+  accessory.getServiceById(hap.Service.Switch, 'fan:LOW').setCharacteristic(hap.Characteristic.ConfiguredName, '我的低速');
+  const before = accessory.services.map(s => [s.UUID, s.subtype]);
+  const cached = hap.Accessory.deserialize(hap.Accessory.serialize(accessory));
+  const info = { ...device.info, deviceInfo: { modelName: 'DHUM_231006_WW' } };
+  const restored = new Device(platform, cached, info, p); t.after(() => restored.stop());
+  const nameOf = subtype => cached.getServiceById(hap.Service.Switch, subtype).getCharacteristic(hap.Characteristic.ConfiguredName).value;
+  assert.deepEqual(cached.services.map(s => [s.UUID, s.subtype]), before);
+  assert.deepEqual(['SMART_HUMIDITY', 'QUIET_HUMIDITY', 'RAPID_HUMIDITY', 'INTENSIVE_DRY', 'AIR_CLEAN'].map(v => nameOf(`mode:${v}`)),
+    ['模式 智慧除濕 Plus', '模式 靜音除濕', '模式 衣物乾燥', '模式 烘鞋／衣櫥', '模式 AIR_CLEAN（App 未列出）']);
+  assert.equal(nameOf('fan:LOW'), '我的低速');
+  assert.equal(nameOf('fan:MID'), '風速 中');
+  assert.equal(nameOf('fan:POWER'), '風速 POWER（待核對）');
+  await restored.refresh();
+  const sent = []; platform.client.control = async (_id, payload) => sent.push(payload);
+  for (const mode of ['RAPID_HUMIDITY', 'INTENSIVE_DRY']) {
+    await cached.getServiceById(hap.Service.Switch, `mode:${mode}`).getCharacteristic(hap.Characteristic.On).handleSetRequest(true);
+  }
+  assert.deepEqual(sent, ['RAPID_HUMIDITY', 'INTENSIVE_DRY'].map(currentJobMode => ({ dehumidifierJobMode: { currentJobMode } })));
+  platform.config.optionNames = { RAPID_HUMIDITY: '曬衣模式' };
+  const again = new Device(platform, cached, info, p); t.after(() => again.stop());
+  assert.equal(nameOf('mode:RAPID_HUMIDITY'), '模式 曬衣模式');
+  assert.equal(nameOf('fan:LOW'), '我的低速');
+});
+
 test('MQTT 簽發、TLS 及訂閱使用官方協定，錯誤設備事件被過濾', async t => {
   const forge = require('node-forge');
   const { PushConnection } = require('../lib/push');
