@@ -64,6 +64,7 @@ class Platform {
       const controller = new Device(this, accessory, device, profile);
       this.devices.push(controller);
       if (isNew) this.api.registerPlatformAccessories(PLUGIN, PLATFORM, [accessory]);
+      else this.api.updatePlatformAccessories([accessory]);
       for (const old of this.cached.filter(a => a.UUID !== uuid)) this.api.unregisterPlatformAccessories(PLUGIN, PLATFORM, [old]);
       await controller.poll();
       if (controller.notification) {
@@ -95,6 +96,7 @@ class Device {
     const target = caps.range(profile);
     if (target && caps.property(profile, 'current')?.mode?.includes('r')) {
       const service = this.service(this.S.HumidifierDehumidifier, name, 'main');
+      service.setPrimaryService(true);
       this.bind(service, this.C.Active, () => this.power() ? 1 : 0, v => this.write('power', v ? 'POWER_ON' : 'POWER_OFF'));
       this.bind(service, this.C.CurrentRelativeHumidity, () => this.humidity('current'));
       this.bind(service, this.C.TargetHumidifierDehumidifierState, () => 2, v => {
@@ -106,10 +108,8 @@ class Device {
         v => this.write('target', v), { minValue: target.min, maxValue: target.max, minStep: target.step });
     } else {
       const service = this.service(this.S.Switch, name, 'power');
+      service.setPrimaryService(true);
       this.bind(service, this.C.On, () => this.power(), v => this.write('power', v ? 'POWER_ON' : 'POWER_OFF'));
-      if (caps.property(profile, 'current')?.mode?.includes('r')) {
-        this.bind(this.service(this.S.HumiditySensor, `${name} 濕度`, 'humidity'), this.C.CurrentRelativeHumidity, () => this.humidity('current'));
-      }
       platform.log.warn('實機未提供可用的目標濕度範圍；僅建立開關與可讀感測器。');
     }
     // 每個選項獨立開關，避免把未保證順序的列舉值誤當成百分比。
@@ -134,6 +134,11 @@ class Device {
         return this.eventActive ? 1 : 0;
       });
       this.notification.getCharacteristic(this.C.StatusFault).onGet(() => this.pushOnline ? 0 : 1);
+    }
+    // 將目前濕度另以標準感測器提供，供「家庭」的氣候資訊使用。
+    // 目標濕度仍屬於主除濕機，不把設定值偽裝成環境感測值。
+    if (caps.property(profile, 'current')?.mode?.includes('r')) {
+      this.bind(this.service(this.S.HumiditySensor, `${name} 目前濕度`, 'humidity'), this.C.CurrentRelativeHumidity, () => this.humidity('current'));
     }
     for (const service of [...accessory.services]) {
       if (service.UUID !== this.S.AccessoryInformation.UUID && !this.wanted.has(service)) accessory.removeService(service);
