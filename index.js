@@ -17,7 +17,7 @@ const modelLabels = {
   DHUM_231006_WW: {
     SMART_HUMIDITY: '智慧除濕 Plus', QUIET_HUMIDITY: '靜音除濕',
     RAPID_HUMIDITY: '衣物乾燥', INTENSIVE_DRY: '烘鞋／衣櫥',
-    MID: '中', POWER: 'POWER（待核對）', AIR_CLEAN: 'AIR_CLEAN（App 未列出）',
+    MID: '中', POWER: 'Turbo', AIR_CLEAN: 'AIR_CLEAN（App 未列出）',
   },
 };
 
@@ -113,7 +113,7 @@ class Device {
       // 官方介面沒有壓縮機狀態；開機僅顯示 IDLE，不推測正在除濕。
       this.bind(service, this.C.CurrentHumidifierDehumidifierState, () => this.power() ? 1 : 0);
       this.bind(service, this.C.RelativeHumidityDehumidifierThreshold, () => this.humidity('target'),
-        v => this.write('target', v), { minValue: target.min, maxValue: target.max, minStep: target.step });
+        v => this.write('target', this.normalizeTarget(v)), { minValue: 0, maxValue: 100, minStep: 1 });
     } else {
       const service = this.service(this.S.Switch, name, 'power');
       service.setPrimaryService(true);
@@ -151,6 +151,17 @@ class Device {
     for (const service of [...accessory.services]) {
       if (service.UUID !== this.S.AccessoryInformation.UUID && !this.wanted.has(service)) accessory.removeService(service);
     }
+  }
+  // HomeKit 使用標準百分比範圍；實際指令依設備刻度及例外值校正。
+  normalizeTarget(value) {
+    const r = caps.range(this.profile);
+    if (!r || typeof value !== 'number' || !Number.isFinite(value)) throw this.error();
+    const allowed = [];
+    for (let n = r.min; n <= r.max; n += r.step) {
+      if (!r.except?.includes(n)) allowed.push(n);
+    }
+    if (!allowed.length) throw this.error();
+    return allowed.reduce((best, n) => Math.abs(n - value) < Math.abs(best - value) ? n : best);
   }
   error() { return new this.hap.HapStatusError(-70402); }
   assertOnline() {
