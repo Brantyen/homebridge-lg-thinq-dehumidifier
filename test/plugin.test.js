@@ -146,7 +146,7 @@ test('濕度作為主除濕機與感測器輸出，舊配件升級保留控制�
   assert.equal(sensor.getCharacteristic(hap.Characteristic.CurrentRelativeHumidity).value, 59);
   const target = main.getCharacteristic(hap.Characteristic.RelativeHumidityDehumidifierThreshold);
   assert.equal(target.value, 50);
-  assert.deepEqual([target.props.minValue, target.props.maxValue, target.props.minStep], [30, 70, 5]);
+  assert.deepEqual([target.props.minValue, target.props.maxValue, target.props.minStep], [0, 100, 1]);
   await target.handleSetRequest(55);
   assert.deepEqual(sent, [{ humidity: { targetHumidity: 55 } }]);
   // 輪詢仍以設備實際值為準，不把目標值當目前濕度。
@@ -168,7 +168,7 @@ test('DD201 模式名稱遷移保留識別與自訂名稱，控制仍送出核�
   const air = accessory.getServiceById(hap.Service.Switch, 'mode:AIR_CLEAN');
   air.setCharacteristic(hap.Characteristic.Name, '模式 選項 1').setCharacteristic(hap.Characteristic.ConfiguredName, '模式 選項 1');
   const power = accessory.getServiceById(hap.Service.Switch, 'fan:POWER');
-  power.setCharacteristic(hap.Characteristic.Name, '風速 選項 2').setCharacteristic(hap.Characteristic.ConfiguredName, '風速 選項 2');
+  power.setCharacteristic(hap.Characteristic.Name, '風速 POWER（待核對）').setCharacteristic(hap.Characteristic.ConfiguredName, '風速 POWER（待核對）');
   accessory.getServiceById(hap.Service.Switch, 'fan:LOW').setCharacteristic(hap.Characteristic.ConfiguredName, '我的低速');
   const before = accessory.services.map(s => [s.UUID, s.subtype]);
   const cached = hap.Accessory.deserialize(hap.Accessory.serialize(accessory));
@@ -180,7 +180,7 @@ test('DD201 模式名稱遷移保留識別與自訂名稱，控制仍送出核�
     ['模式 智慧除濕 Plus', '模式 靜音除濕', '模式 衣物乾燥', '模式 烘鞋／衣櫥', '模式 AIR_CLEAN（App 未列出）']);
   assert.equal(nameOf('fan:LOW'), '我的低速');
   assert.equal(nameOf('fan:MID'), '風速 中');
-  assert.equal(nameOf('fan:POWER'), '風速 POWER（待核對）');
+  assert.equal(nameOf('fan:POWER'), '風速 Turbo');
   await restored.refresh();
   const sent = []; platform.client.control = async (_id, payload) => sent.push(payload);
   for (const mode of ['RAPID_HUMIDITY', 'INTENSIVE_DRY']) {
@@ -222,4 +222,21 @@ test('MQTT 簽發、TLS 及訂閱使用官方協定，錯誤設備事件被過�
   emitter.emit('message', 'test/topic', Buffer.from('{"deviceId":"other"}'));
   emitter.emit('message', 'test/topic', Buffer.from('{"deviceId":"test-id","pushCode":"WATER_IS_FULL"}'));
   assert.equal(messageCount, 1); emitter.emit('offline'); assert.equal(online, false);
+});
+
+test('HomeKit 標準濕度範圍可上下設定，LG 指令仍符合設備刻度', async t => {
+  const p = profile(); delete p.property.humidity.targetHumidity.value.w.except;
+  const { device, accessory, platform } = setup(p); t.after(() => device.stop());
+  let actual = 40; const sent = [];
+  platform.client.state = async () => ({ ...state(), humidity: { currentHumidity: 52, targetHumidity: actual } });
+  platform.client.control = async (_id, payload) => { sent.push(payload.humidity.targetHumidity); actual = payload.humidity.targetHumidity; };
+  const c = accessory.getServiceById(hap.Service.HumidifierDehumidifier, 'main').getCharacteristic(hap.Characteristic.RelativeHumidityDehumidifierThreshold);
+  for (const [requested, expected] of [[60,60], [40,40], [65,65], [99,70], [1,30], [56,55]]) {
+    await device.refresh(); await c.handleSetRequest(requested); await device.refresh();
+    assert.equal(c.value, expected);
+    assert.deepEqual([c.props.minValue,c.props.maxValue,c.props.minStep], [0,100,1]);
+  }
+  assert.deepEqual(sent,[60,40,65,70,30,55]);
+  assert.equal(device.normalizeTarget(50),50);
+  assert.throws(() => device.normalizeTarget(NaN));
 });
