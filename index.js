@@ -12,6 +12,14 @@ const labels = {
   SMART_HUMIDITY: '智慧除濕', INTENSIVE_DRY: '強力乾燥',
   RAPID_HUMIDITY: '快速除濕', QUIET_HUMIDITY: '安靜除濕', CLOTHES_DRY: '衣物乾燥',
 };
+// 依 DD201MWE0 的 ThinQ 畫面及使用者切換後讀回的代碼核對。
+const modelLabels = {
+  DHUM_231006_WW: {
+    SMART_HUMIDITY: '智慧除濕 Plus', QUIET_HUMIDITY: '靜音除濕',
+    RAPID_HUMIDITY: '衣物乾燥', INTENSIVE_DRY: '烘鞋／衣櫥',
+    MID: '中', POWER: 'POWER（待核對）', AIR_CLEAN: 'AIR_CLEAN（App 未列出）',
+  },
+};
 
 class Platform {
   constructor(log, config, api) {
@@ -115,7 +123,7 @@ class Device {
     // 每個選項獨立開關，避免把未保證順序的列舉值誤當成百分比。
     for (const [key, prefix] of [['fan', '風速'], ['mode', '模式']]) {
       for (const value of caps.values(profile, key)) {
-        const display = platform.config.optionNames?.[value] || labels[value] || `選項 ${caps.values(profile, key).indexOf(value) + 1}`;
+        const display = platform.config.optionNames?.[value] || modelLabels[info.deviceInfo.modelName]?.[value] || labels[value] || `${value}（待核對）`;
         const service = this.service(this.S.Switch, `${prefix} ${display}`, `${key}:${value}`);
         this.bind(service, this.C.On, () => {
           this.assertOnline();
@@ -162,11 +170,15 @@ class Device {
   service(type, name, subtype) {
     let service = this.accessory.getServiceById(type, subtype);
     if (!service) service = this.accessory.addService(type, name, subtype);
+    const previousName = service.getCharacteristic(this.C.Name).value;
     service.setCharacteristic(this.C.Name, name);
     // Apple「家庭」以 ConfiguredName 區分同一配件內的控制項。
     // 首次升級補上名稱，之後保留使用者在「家庭」自訂的名稱。
     if (!service.testCharacteristic(this.C.ConfiguredName)) {
       service.addCharacteristic(this.C.ConfiguredName).setValue(name);
+    } else if (service.getCharacteristic(this.C.ConfiguredName).value === previousName) {
+      // 只遷移舊預設名稱；與舊 Name 不同的名稱視為使用者自訂。
+      service.setCharacteristic(this.C.ConfiguredName, name);
     }
     this.wanted.add(service); return service;
   }
