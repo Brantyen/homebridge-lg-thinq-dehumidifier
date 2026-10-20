@@ -38,12 +38,15 @@
       },
       "nativeTimerHours": {
         "title": "原生定時關機選項（整數小時）",
-        "description": "由除濕機執行，預設 1、2、4、8 小時；實際可用時間以 LG 回應為準。",
+        "description": "由除濕機執行，預設 1、2、3、4、5、7、8 小時；實際可用時間以 LG 回應為準。",
         "type": "array",
         "default": [
           1,
           2,
+          3,
           4,
+          5,
+          7,
           8
         ],
         "uniqueItems": true,
