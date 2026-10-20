@@ -6,6 +6,7 @@ const hap = require('hap-nodejs');
 const { Device, Platform } = require('../index');
 const { ThinQClient } = require('../lib/client');
 const caps = require('../lib/capabilities');
+const nativeTimer = require('../lib/native-timer');
 const enumProperty = values => ({ mode: ['r', 'w'], type: 'enum', value: { r: values, w: values } });
 function profile() {
   return { notification: { push: ['WATER_IS_FULL'] }, property: {
@@ -26,6 +27,89 @@ function setup(p = profile()) {
   const device = new Device(platform, accessory, { deviceId: 'test-id', deviceInfo: { modelName: '測試模型' } }, p);
   return { device, accessory, platform };
 }
+
+// Sleep-timer capability from the user's DHUM_231006_WW diagnostic, 2026-10-20.
+function sleepProfile() {
+  const p = profile();
+  p.property.sleepTimer = {
+    relativeHourToStop: { type: 'number', mode: ['r', 'w'] },
+    relativeMinuteToStop: { type: 'number', mode: ['r'] },
+    relativeStopTimer: { type: 'enum', mode: ['r', 'w'], value: { r: ['SET', 'UNSET'], w: ['UNSET'] } },
+  };
+  return p;
+}
+test('native sleep-timer payload writes hours only, cancellation writes UNSET only', () => {
+  const p = sleepProfile();
+  assert.equal(nativeTimer.supported(p), true);
+  assert.deepEqual(nativeTimer.command(p, 2), { sleepTimer: { relativeHourToStop: 2 } });
+  assert.deepEqual(nativeTimer.command(p, null), { sleepTimer: { relativeStopTimer: 'UNSET' } });
+  for (const h of [0, -1, 1.5, NaN, '2', 25, 'SET']) assert.throws(() => nativeTimer.command(p, h));
+  assert.equal(nativeTimer.supported(profile()), false);
+  p.property.sleepTimer.relativeHourToStop.mode = ['r'];
+  assert.equal(nativeTimer.supported(p), false);
+  assert.throws(() => nativeTimer.command(p, 2));
+});
+test('native timer respects advertised limits and validates configurable presets', () => {
+  const p = sleepProfile();
+  p.property.sleepTimer.relativeHourToStop.value = { w: { min: 1, max: 7, step: 2, except: [5] } };
+  assert.doesNotThrow(() => nativeTimer.command(p, 3));
+  for (const h of [2, 5, 8]) assert.throws(() => nativeTimer.command(p, h));
+  assert.deepEqual(nativeTimer.hours([1, 1, 3]), [1, 3]);
+  for (const h of [null, [0], [1.5], ['2'], Array(13).fill(1)]) assert.throws(() => nativeTimer.hours(h));
+});
+test('native timer buttons reset and status is authoritative; no local power-off command', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { device, accessory, platform } = setup(sleepProfile()); t.after(() => device.stop());
+  let actual = { relativeStopTimer: 'UNSET' }; const sent = [];
+  platform.client.state = async () => ({ ...state(), sleepTimer: actual });
+  platform.client.control = async (_id, payload) => sent.push(payload);
+  await device.refresh();
+  const status = accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer').getCharacteristic(hap.Characteristic.On);
+  const button = accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer:2').getCharacteristic(hap.Characteristic.On);
+  assert.equal(await status.handleGetRequest(), false);
+  await assert.rejects(status.handleSetRequest(true)); assert.equal(sent.length, 0);
+  await button.handleSetRequest(true);
+  assert.deepEqual(sent, [{ sleepTimer: { relativeHourToStop: 2 } }]);
+  assert.equal(await status.handleGetRequest(), false); // API acceptance is not state confirmation.
+  t.mock.timers.tick(251); assert.equal(button.value, false);
+  actual = { relativeStopTimer: 'SET', relativeHourToStop: 2, relativeMinuteToStop: 0 };
+  await device.refresh(); assert.equal(await status.handleGetRequest(), true);
+  await status.handleSetRequest(false);
+  assert.deepEqual(sent[1], { sleepTimer: { relativeStopTimer: 'UNSET' } });
+  await device.refresh(); assert.equal(await status.handleGetRequest(), true); // LG has not confirmed cancel yet.
+  actual = { relativeStopTimer: 'UNSET' }; await device.refresh();
+  assert.equal(await status.handleGetRequest(), false);
+  t.mock.timers.tick(9 * 3600000);
+  await Promise.resolve(); assert.equal(sent.some(p => p.operation), false);
+});
+test('native timer rejects offline or powered-off setting but supports cancelling when powered off', async t => {
+  const { device, platform } = setup(sleepProfile()); t.after(() => device.stop());
+  const sent = []; platform.client.control = async (_id, payload) => sent.push(payload);
+  await assert.rejects(device.writeNativeTimer(1)); assert.equal(sent.length, 0);
+  platform.client.state = async () => ({ ...state(), operation: { dehumidifierOperationMode: 'POWER_OFF' }, sleepTimer: { relativeStopTimer: 'UNSET' } });
+  await device.refresh(); await assert.rejects(device.writeNativeTimer(1));
+  await device.writeNativeTimer(null); assert.equal(sent.length, 1);
+});
+test('native timer unknown status does not report off; rejected commands preserve actual state', async t => {
+  const { device, accessory, platform } = setup(sleepProfile()); t.after(() => device.stop());
+  await device.refresh();
+  const c = accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer').getCharacteristic(hap.Characteristic.On);
+  await assert.rejects(c.handleGetRequest());
+  platform.client.state = async () => ({ ...state(), sleepTimer: { relativeStopTimer: 'SET' } });
+  await device.refresh(); platform.client.control = async () => { throw new Error('rejected'); };
+  await assert.rejects(device.writeNativeTimer(4));
+  assert.equal(await c.handleGetRequest(), true);
+});
+test('native timer cache upgrade removes legacy reservation switches and preserves notifications', t => {
+  const { device, accessory, platform } = setup(sleepProfile()); t.after(() => device.stop());
+  accessory.addService(hap.Service.Switch, 'Old reservation', 'off-timer:60');
+  const cached = hap.Accessory.deserialize(hap.Accessory.serialize(accessory));
+  const restored = new Device(platform, cached, device.info, device.profile); t.after(() => restored.stop());
+  assert.equal(cached.getServiceById(hap.Service.Switch, 'off-timer:60'), undefined);
+  assert.equal(cached.services.filter(s => s.subtype === 'native-sleep-timer').length, 1);
+  assert.ok(restored.notification);
+  assert.equal(cached.UUID, accessory.UUID);
+});
 
 test('濕度範圍、刻度、例外值與模式均依能力檢查', () => {
   assert.deepEqual(caps.command(profile(), 'target', 55), { humidity: { targetHumidity: 55 } });

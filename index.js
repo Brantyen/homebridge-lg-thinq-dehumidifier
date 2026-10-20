@@ -5,6 +5,7 @@ const { randomUUID } = require('node:crypto');
 const { ThinQClient } = require('./lib/client');
 const { PushConnection } = require('./lib/push');
 const caps = require('./lib/capabilities');
+const nativeTimer = require('./lib/native-timer');
 const PLUGIN = 'homebridge-lg-thinq-dd201';
 const PLATFORM = 'LGThinQDehumidifier';
 const labels = {
@@ -148,6 +149,7 @@ class Device {
     if (caps.property(profile, 'current')?.mode?.includes('r')) {
       this.bind(this.service(this.S.HumiditySensor, `${name} 目前濕度`, 'humidity'), this.C.CurrentRelativeHumidity, () => this.humidity('current'));
     }
+    nativeTimer.bind(this);
     for (const service of [...accessory.services]) {
       if (service.UUID !== this.S.AccessoryInformation.UUID && !this.wanted.has(service)) accessory.removeService(service);
     }
@@ -248,6 +250,19 @@ class Device {
     this.notification.updateCharacteristic(this.C.StatusFault, online ? 0 : 1);
     this.notification.updateCharacteristic(this.C.ContactSensorState, online ? (this.eventActive ? 1 : 0) : this.error());
   }
+  writeNativeTimer(hour) {
+    const payload = nativeTimer.command(this.profile, hour);
+    const task = this.queue.then(async () => {
+      this.assertOnline();
+      if (hour !== null && !this.power()) throw new Error('請先開啟除濕機再設定定時關機');
+      await this.platform.client.control(this.info.deviceId, payload);
+      // As with other controls, acknowledge acceptance but only publish state read from LG.
+      clearTimeout(this.afterWrite);
+      this.afterWrite = setTimeout(() => void this.refresh().catch(e => this.platform.log.warn(e.message)), 3000);
+    });
+    this.queue = task.catch(() => {});
+    return task;
+  }
   message(message) {
     if (message.deviceId !== this.info.deviceId || message.pushCode !== 'WATER_IS_FULL' || !this.notification) return;
     this.eventActive = true;
@@ -259,7 +274,10 @@ class Device {
       this.notification.updateCharacteristic(this.C.ContactSensorState, this.pushOnline ? 0 : this.error());
     }, 10000);
   }
-  stop() { clearTimeout(this.timer); clearTimeout(this.afterWrite); clearTimeout(this.eventTimer); }
+  stop() {
+    for (const reset of this.nativeTimerResets || []) clearTimeout(reset);
+    clearTimeout(this.timer); clearTimeout(this.afterWrite); clearTimeout(this.eventTimer);
+  }
 }
 module.exports = api => api.registerPlatform(PLUGIN, PLATFORM, Platform);
 module.exports.Platform = Platform;
