@@ -25,6 +25,7 @@ const caps = require('./lib/capabilities');
       model: device.deviceInfo.modelName,
       capabilities: Object.fromEntries(Object.keys(caps.paths).map(k => [k, caps.property(profile, k)])),
       current: Object.fromEntries(Object.keys(caps.paths).map(k => [k, caps.read(state, k)])),
+      nativeTimers: Object.fromEntries(['timer', 'sleepTimer'].filter(key => profile.property?.[key]).map(key => [key, { capability: profile.property[key], current: state[key] ?? null }])),
       waterFullNotification: profile.notification?.push?.includes('WATER_IS_FULL') === true,
       notifications: profile.notification?.push || [],
     });
