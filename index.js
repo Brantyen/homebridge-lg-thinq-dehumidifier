@@ -5,6 +5,7 @@ const { randomUUID } = require('node:crypto');
 const { ThinQClient } = require('./lib/client');
 const { PushConnection } = require('./lib/push');
 const caps = require('./lib/capabilities');
+const { OffTimer, presets } = require('./lib/off-timer');
 const PLUGIN = 'homebridge-lg-thinq-dd201';
 const PLATFORM = 'LGThinQDehumidifier';
 const labels = {
@@ -95,6 +96,7 @@ class Device {
     this.state = {}; this.lastUpdate = 0; this.online = false;
     this.queue = Promise.resolve(); this.bindings = []; this.wanted = new Set();
     this.failures = 0; this.eventActive = false; this.pushOnline = false;
+    this.timerPresets = presets(platform.config.timerPresets);
     const information = accessory.getService(this.S.AccessoryInformation);
     information.setCharacteristic(this.C.Manufacturer, 'LG')
       .setCharacteristic(this.C.Model, info.deviceInfo.modelName || 'DD201MWE0（待核實）')
@@ -147,6 +149,22 @@ class Device {
     // 目標濕度仍屬於主除濕機，不把設定值偽裝成環境感測值。
     if (caps.property(profile, 'current')?.mode?.includes('r')) {
       this.bind(this.service(this.S.HumiditySensor, `${name} 目前濕度`, 'humidity'), this.C.CurrentRelativeHumidity, () => this.humidity('current'));
+    }
+    if (this.timerPresets.length || platform.api.user) {
+      const file = path.join(platform.api.user.storagePath(), `lg-thinq-off-timer-${accessory.UUID}.json`);
+      this.offTimer = new OffTimer({ file, log: platform.log, changed: () => this.update(),
+        off: valid => this.scheduledOff(valid) });
+      if (this.offTimer.record && !this.timerPresets.includes(this.offTimer.record.minutes)) this.offTimer.cancel();
+      for (const minutes of this.timerPresets) {
+        const label = minutes % 60 === 0 ? `${minutes / 60} 小時` : `${minutes} 分鐘`;
+        this.bind(this.service(this.S.Switch, `預約關機 ${label}`, `off-timer:${minutes}`), this.C.On,
+          () => this.offTimer.record?.minutes === minutes,
+          on => {
+            if (on) { this.assertOnline(); if (!this.power()) throw new Error('請先開啟除濕機，再預約關機'); this.offTimer.set(minutes); }
+            else if (this.offTimer.record?.minutes === minutes) this.offTimer.cancel();
+          });
+      }
+      this.offTimer.arm();
     }
     for (const service of [...accessory.services]) {
       if (service.UUID !== this.S.AccessoryInformation.UUID && !this.wanted.has(service)) accessory.removeService(service);
@@ -218,6 +236,7 @@ class Device {
         const state = await this.platform.client.state(this.info.deviceId);
         if (!state || typeof state !== 'object' || Array.isArray(state) || !state.operation) throw new Error('設備狀態回應不完整。');
         this.state = state; this.online = true; this.lastUpdate = Date.now();
+        if (caps.read(state, 'power') === 'POWER_OFF') this.offTimer?.cancel();
         this.failures = 0; this.update();
       } catch (e) {
         this.online = false; this.failures++; this.update(); throw e;
@@ -235,12 +254,27 @@ class Device {
     const task = this.queue.then(async () => {
       this.assertOnline();
       await this.platform.client.control(this.info.deviceId, payload);
+      if (key === 'power' && value === 'POWER_OFF') this.offTimer?.cancel();
       // 成功僅表示 API 接受指令；讀回實際狀態，不直接捏造新狀態。
       clearTimeout(this.afterWrite);
       this.afterWrite = setTimeout(() => void this.refresh().catch(e => this.platform.log.warn(e.message)), 3000);
     });
     this.queue = task.catch(() => {});
     return task;
+  }
+  scheduledOff(valid) {
+    const task = this.queue.then(async () => {
+      if (!valid()) return false;
+      // Finish any old poll before requesting fresh state for this action.
+      if (this.pending) await this.pending;
+      await this.refresh();
+      if (!valid() || this.platform.stopped) return false;
+      if (!this.power()) return true;
+      await this.platform.client.control(this.info.deviceId, caps.command(this.profile, 'power', 'POWER_OFF'));
+      await this.refresh();
+      return !this.power();
+    });
+    this.queue = task.catch(() => {}); return task;
   }
   pushStatus(online) {
     this.pushOnline = online;
@@ -259,7 +293,7 @@ class Device {
       this.notification.updateCharacteristic(this.C.ContactSensorState, this.pushOnline ? 0 : this.error());
     }, 10000);
   }
-  stop() { clearTimeout(this.timer); clearTimeout(this.afterWrite); clearTimeout(this.eventTimer); }
+  stop() { this.offTimer?.stop(); clearTimeout(this.timer); clearTimeout(this.afterWrite); clearTimeout(this.eventTimer); }
 }
 module.exports = api => api.registerPlatform(PLUGIN, PLATFORM, Platform);
 module.exports.Platform = Platform;
