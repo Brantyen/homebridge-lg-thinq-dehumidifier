@@ -1,3 +1,7 @@
+## 0.1.5 預約關機
+
+新增可取消、可恢復的 Homebridge 倒數關機；使用方法與限制見 [TIMER_UPDATE.md](TIMER_UPDATE.md)。
+
 # LG ThinQ 除濕機 Homebridge 外掛
 
 這是提供給臺灣 LG ThinQ 帳號、以 DD201MWE0 為目標的 0.1.4 測試版。已完成程式及本機模擬測試，**尚未連接你的 LG 帳號、Raspberry Pi 或 DD201MWE0 實機，不代表已確認相容**。如果官方 API 不列出該設備或功能，程式不會改用猜測指令。
