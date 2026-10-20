@@ -1,12 +1,12 @@
 {
   "name": "homebridge-lg-thinq-dd201",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "homebridge-lg-thinq-dd201",
-      "version": "0.1.7",
+      "version": "0.1.8",
       "license": "MIT",
       "dependencies": {
         "mqtt": "5.16.0",

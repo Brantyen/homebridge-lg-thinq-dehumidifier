@@ -149,6 +149,10 @@ class Device {
     if (caps.property(profile, 'current')?.mode?.includes('r')) {
       this.bind(this.service(this.S.HumiditySensor, `${name} 目前濕度`, 'humidity'), this.C.CurrentRelativeHumidity, () => this.humidity('current'));
     }
+    if (target && caps.property(profile, 'current')?.mode?.includes('r')) {
+      this.bind(this.service(this.S.Switch, `${name}電源`, 'power-control'), this.C.On,
+        () => this.power(), on => this.write('power', on ? 'POWER_ON' : 'POWER_OFF'));
+    }
     nativeTimer.bind(this);
     for (const service of [...accessory.services]) {
       if (service.UUID !== this.S.AccessoryInformation.UUID && !this.wanted.has(service)) accessory.removeService(service);
@@ -220,6 +224,7 @@ class Device {
         const state = await this.platform.client.state(this.info.deviceId);
         if (!state || typeof state !== 'object' || Array.isArray(state) || !state.operation) throw new Error('設備狀態回應不完整。');
         this.state = state; this.online = true; this.lastUpdate = Date.now();
+        nativeTimer.reconcile(this);
         this.failures = 0; this.update();
       } catch (e) {
         this.online = false; this.failures++; this.update(); throw e;
@@ -253,9 +258,13 @@ class Device {
   writeNativeTimer(hour) {
     const payload = nativeTimer.command(this.profile, hour);
     const task = this.queue.then(async () => {
+      if (this.pending) await this.pending;
       this.assertOnline();
+      if (this.platform.stopped) throw new Error('Homebridge is shutting down');
       if (hour !== null && !this.power()) throw new Error('請先開啟除濕機再設定定時關機');
+      const previouslyActive = this.state.sleepTimer?.relativeStopTimer === 'SET';
       await this.platform.client.control(this.info.deviceId, payload);
+      this.nativeTimerPending = { hour, previouslyActive, requestedAt: Date.now() };
       // As with other controls, acknowledge acceptance but only publish state read from LG.
       clearTimeout(this.afterWrite);
       this.afterWrite = setTimeout(() => void this.refresh().catch(e => this.platform.log.warn(e.message)), 3000);
@@ -275,7 +284,6 @@ class Device {
     }, 10000);
   }
   stop() {
-    for (const reset of this.nativeTimerResets || []) clearTimeout(reset);
     clearTimeout(this.timer); clearTimeout(this.afterWrite); clearTimeout(this.eventTimer);
   }
 }
