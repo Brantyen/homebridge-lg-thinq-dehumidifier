@@ -5,54 +5,12 @@
   "schema": {
     "type": "object",
     "properties": {
-      "name": {
-        "title": "顯示名稱",
-        "type": "string",
-        "default": "LG 除濕機"
-      },
-      "tokenFile": {
-        "title": "PAT 權杖檔案的絕對路徑（建議）",
-        "type": "string"
-      },
-      "token": {
-        "title": "PAT（未使用權杖檔案時填入）",
-        "type": "string",
-        "format": "password"
-      },
-      "deviceId": {
-        "title": "設備識別碼（有多台除濕機時必填）",
-        "type": "string"
-      },
-      "pollInterval": {
-        "title": "輪詢秒數",
-        "type": "integer",
-        "minimum": 60,
-        "default": 120
-      },
-      "optionNames": {
-        "title": "選項代碼的自訂正體中文名稱",
-        "type": "object",
-        "additionalProperties": {
-          "type": "string"
-        }
-      },
-      "timerPresets": {
-        "title": "預約關機時間（分鐘，空陣列停用）",
-        "type": "array",
-        "default": [
-          60,
-          120,
-          240,
-          480
-        ],
-        "maxItems": 12,
-        "uniqueItems": true,
-        "items": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 1440
-        }
-      }
+      "name": { "title": "顯示名稱", "type": "string", "default": "LG 除濕機" },
+      "tokenFile": { "title": "PAT 權杖檔案的絕對路徑（建議）", "type": "string" },
+      "token": { "title": "PAT（未使用權杖檔案時填入）", "type": "string", "format": "password" },
+      "deviceId": { "title": "設備識別碼（有多台除濕機時必填）", "type": "string" },
+      "pollInterval": { "title": "輪詢秒數", "type": "integer", "minimum": 60, "default": 120 },
+      "optionNames": { "title": "選項代碼的自訂正體中文名稱", "type": "object", "additionalProperties": { "type": "string" } }
     }
   }
 }
