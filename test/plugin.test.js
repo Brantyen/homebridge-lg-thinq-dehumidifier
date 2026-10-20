@@ -67,7 +67,23 @@ test('generic Siri timer switch can start a default duration and uniquely named 
   await accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer').getCharacteristic(hap.Characteristic.On).handleSetRequest(true);
   assert.deepEqual(sent, [{ sleepTimer: { relativeHourToStop: 1 } }]);
   const preset = accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer:1');
-  assert.equal(preset.getCharacteristic(hap.Characteristic.ConfiguredName).value, 'LG 除濕機定時 1 小時');
+  assert.equal(preset.getCharacteristic(hap.Characteristic.ConfiguredName).value, '除濕機定時一小時');
+  assert.equal(accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer').getCharacteristic(hap.Characteristic.ConfiguredName).value, '除濕機定時');
+});
+test('simple Siri switch uses configured duration and migrates old defaults while preserving custom names', async t => {
+  const { device, accessory, platform } = setup(sleepProfile()); t.after(() => device.stop());
+  const old = accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer');
+  old.setCharacteristic(hap.Characteristic.Name, 'LG 除濕機定時').setCharacteristic(hap.Characteristic.ConfiguredName, 'LG 除濕機定時');
+  const preset = accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer:1');
+  preset.setCharacteristic(hap.Characteristic.ConfiguredName, '我的一小時');
+  platform.config.nativeTimerDefaultHours = 2;
+  const restored = new Device(platform, accessory, device.info, device.profile); t.after(() => restored.stop());
+  assert.equal(old.getCharacteristic(hap.Characteristic.ConfiguredName).value, '除濕機定時');
+  assert.equal(preset.getCharacteristic(hap.Characteristic.ConfiguredName).value, '我的一小時');
+  const sent = []; platform.client.control = async (_id, payload) => sent.push(payload);
+  platform.client.state = async () => ({ ...state(), sleepTimer: { relativeStopTimer: 'UNSET' } });
+  await restored.refresh(); await old.getCharacteristic(hap.Characteristic.On).handleSetRequest(true);
+  assert.deepEqual(sent, [{ sleepTimer: { relativeHourToStop: 2 } }]);
 });
 test('dedicated power switch is present alongside the primary dehumidifier and sends real power commands', async t => {
   const { device, accessory, platform } = setup(); t.after(() => device.stop());
