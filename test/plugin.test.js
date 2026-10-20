@@ -38,6 +38,63 @@ function sleepProfile() {
   };
   return p;
 }
+test('timer selection survives countdown and restart without switching to a shorter preset', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1800000000000 });
+  const { device, accessory, platform } = setup(sleepProfile()); t.after(() => device.stop());
+  let actual = { relativeStopTimer: 'UNSET' };
+  platform.client.state = async () => ({ ...state(), sleepTimer: actual });
+  await device.refresh(); await device.writeNativeTimer(2);
+  actual = { relativeStopTimer: 'SET', relativeHourToStop: 1, relativeMinuteToStop: 59 };
+  await device.refresh();
+  assert.equal(nativeTimer.selection(device).hour, 2);
+  device.stop(); // Simulate Homebridge offline while the device continues its own countdown.
+  t.mock.timers.tick(3600000);
+  actual = { relativeStopTimer: 'SET', relativeHourToStop: 0, relativeMinuteToStop: 59 };
+  await device.refresh();
+  assert.equal(nativeTimer.selection(device).hour, 2);
+  const restored = new Device(platform, accessory, device.info, device.profile); t.after(() => restored.stop());
+  await restored.refresh();
+  assert.equal(await accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer:2').getCharacteristic(hap.Characteristic.On).handleGetRequest(), true);
+  assert.equal(await accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer:1').getCharacteristic(hap.Characteristic.On).handleGetRequest(), false);
+  actual = { relativeStopTimer: 'UNSET' }; await restored.refresh();
+  assert.equal(nativeTimer.selection(restored), undefined);
+});
+test('generic Siri timer switch can start a default duration and uniquely named presets work', async t => {
+  const { device, accessory, platform } = setup(sleepProfile()); t.after(() => device.stop());
+  const sent = []; platform.client.control = async (_id, payload) => sent.push(payload);
+  platform.client.state = async () => ({ ...state(), sleepTimer: { relativeStopTimer: 'UNSET' } });
+  await device.refresh();
+  await accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer').getCharacteristic(hap.Characteristic.On).handleSetRequest(true);
+  assert.deepEqual(sent, [{ sleepTimer: { relativeHourToStop: 1 } }]);
+  const preset = accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer:1');
+  assert.equal(preset.getCharacteristic(hap.Characteristic.ConfiguredName).value, 'LG 除濕機定時 1 小時');
+});
+test('dedicated power switch is present alongside the primary dehumidifier and sends real power commands', async t => {
+  const { device, accessory, platform } = setup(); t.after(() => device.stop());
+  const sent = []; let power = 'POWER_ON';
+  platform.client.state = async () => ({ ...state(), operation: { dehumidifierOperationMode: power } });
+  platform.client.control = async (_id, payload) => { sent.push(payload); power = payload.operation.dehumidifierOperationMode; };
+  const s = accessory.getServiceById(hap.Service.Switch, 'power-control');
+  assert.equal(s.getCharacteristic(hap.Characteristic.ConfiguredName).value, 'LG 除濕機電源');
+  assert.equal(accessory.getServiceById(hap.Service.HumidifierDehumidifier, 'main').isPrimaryService, true);
+  await device.refresh(); await s.getCharacteristic(hap.Characteristic.On).handleSetRequest(false); await device.refresh();
+  assert.equal(await s.getCharacteristic(hap.Characteristic.On).handleGetRequest(), false);
+  await s.getCharacteristic(hap.Characteristic.On).handleSetRequest(true); await device.refresh();
+  assert.equal(await s.getCharacteristic(hap.Characteristic.On).handleGetRequest(), true);
+  assert.deepEqual(sent, ['POWER_OFF', 'POWER_ON'].map(dehumidifierOperationMode => ({ operation: { dehumidifierOperationMode } })));
+});
+test('old readback and turning another preset off do not cancel a newly selected duration', async t => {
+  const { device, accessory, platform } = setup(sleepProfile()); t.after(() => device.stop());
+  let actual = { relativeStopTimer: 'SET', relativeHourToStop: 1, relativeMinuteToStop: 0 }; const sent = [];
+  platform.client.state = async () => ({ ...state(), sleepTimer: actual });
+  platform.client.control = async (_id, payload) => sent.push(payload);
+  await device.refresh(); await device.writeNativeTimer(2);
+  await device.refresh(); assert.equal(nativeTimer.selection(device).hour, 1);
+  await accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer:1').getCharacteristic(hap.Characteristic.On).handleSetRequest(false);
+  assert.equal(sent.length, 1);
+  actual = { relativeStopTimer: 'SET', relativeHourToStop: 2, relativeMinuteToStop: 0 };
+  await device.refresh(); assert.equal(nativeTimer.selection(device).hour, 2);
+});
 test('native sleep-timer payload writes hours only, cancellation writes UNSET only', () => {
   const p = sleepProfile();
   assert.equal(nativeTimer.supported(p), true);
@@ -57,30 +114,25 @@ test('native timer respects advertised limits and validates configurable presets
   assert.deepEqual(nativeTimer.hours([1, 1, 3]), [1, 3]);
   for (const h of [null, [0], [1.5], ['2'], Array(13).fill(1)]) assert.throws(() => nativeTimer.hours(h));
 });
-test('native timer buttons reset and status is authoritative; no local power-off command', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+test('native timer switches stay on after confirmed readback and off cancels', async t => {
   const { device, accessory, platform } = setup(sleepProfile()); t.after(() => device.stop());
   let actual = { relativeStopTimer: 'UNSET' }; const sent = [];
   platform.client.state = async () => ({ ...state(), sleepTimer: actual });
   platform.client.control = async (_id, payload) => sent.push(payload);
   await device.refresh();
   const status = accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer').getCharacteristic(hap.Characteristic.On);
-  const button = accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer:2').getCharacteristic(hap.Characteristic.On);
-  assert.equal(await status.handleGetRequest(), false);
-  await assert.rejects(status.handleSetRequest(true)); assert.equal(sent.length, 0);
-  await button.handleSetRequest(true);
+  const two = accessory.getServiceById(hap.Service.Switch, 'native-sleep-timer:2').getCharacteristic(hap.Characteristic.On);
+  await two.handleSetRequest(true);
   assert.deepEqual(sent, [{ sleepTimer: { relativeHourToStop: 2 } }]);
-  assert.equal(await status.handleGetRequest(), false); // API acceptance is not state confirmation.
-  t.mock.timers.tick(251); assert.equal(button.value, false);
+  assert.equal(await status.handleGetRequest(), false);
   actual = { relativeStopTimer: 'SET', relativeHourToStop: 2, relativeMinuteToStop: 0 };
   await device.refresh(); assert.equal(await status.handleGetRequest(), true);
-  await status.handleSetRequest(false);
+  assert.equal(await two.handleGetRequest(), true); assert.equal(two.value, true);
+  await two.handleSetRequest(false);
   assert.deepEqual(sent[1], { sleepTimer: { relativeStopTimer: 'UNSET' } });
-  await device.refresh(); assert.equal(await status.handleGetRequest(), true); // LG has not confirmed cancel yet.
   actual = { relativeStopTimer: 'UNSET' }; await device.refresh();
-  assert.equal(await status.handleGetRequest(), false);
-  t.mock.timers.tick(9 * 3600000);
-  await Promise.resolve(); assert.equal(sent.some(p => p.operation), false);
+  assert.equal(await status.handleGetRequest(), false); assert.equal(await two.handleGetRequest(), false);
+  assert.equal(sent.some(p => p.operation), false);
 });
 test('native timer rejects offline or powered-off setting but supports cancelling when powered off', async t => {
   const { device, platform } = setup(sleepProfile()); t.after(() => device.stop());
@@ -193,14 +245,14 @@ test('快取配件恢復後保留識別資訊並重新綁定服務', async t => 
 test('舊版配件升級補齊控制項名稱，保留全部服務與使用者改名', async t => {
   const { device, accessory, platform } = setup(); t.after(() => device.stop());
   const services = accessory.services.filter(s => s.UUID !== hap.Service.AccessoryInformation.UUID);
-  assert.equal(services.length, 7);
+  assert.equal(services.length, 8);
   for (const s of services) s.removeCharacteristic(s.getCharacteristic(hap.Characteristic.ConfiguredName));
   const restoredAccessory = hap.Accessory.deserialize(hap.Accessory.serialize(accessory));
   const restored = new Device(platform, restoredAccessory, device.info, device.profile); t.after(() => restored.stop());
   assert.equal(restoredAccessory.UUID, accessory.UUID);
   assert.deepEqual(restoredAccessory.services.map(s => [s.UUID, s.subtype]), accessory.services.map(s => [s.UUID, s.subtype]));
   assert.deepEqual(restoredAccessory.services.filter(s => s.subtype).map(s => s.getCharacteristic(hap.Characteristic.ConfiguredName).value),
-    ['LG 除濕機', '風速 低速', '風速 高速', '模式 智慧除濕', '模式 衣物乾燥', '水箱滿通知事件', 'LG 除濕機 目前濕度']);
+    ['LG 除濕機', '風速 低速', '風速 高速', '模式 智慧除濕', '模式 衣物乾燥', '水箱滿通知事件', 'LG 除濕機 目前濕度', 'LG 除濕機電源']);
   const fan = restoredAccessory.getServiceById(hap.Service.Switch, 'fan:LOW');
   await fan.getCharacteristic(hap.Characteristic.ConfiguredName).handleSetRequest('我的低速');
   const again = new Device(platform, restoredAccessory, device.info, device.profile); t.after(() => again.stop());
