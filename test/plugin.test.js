@@ -38,6 +38,21 @@ function sleepProfile() {
   };
   return p;
 }
+test('new three five seven hour switches and saved old defaults send native hour payloads', async t => {
+  assert.deepEqual(nativeTimer.hours(), [1, 2, 3, 4, 5, 7, 8]);
+  assert.deepEqual(nativeTimer.hours([1, 2, 4, 8]), [1, 2, 3, 4, 5, 7, 8]);
+  assert.deepEqual(nativeTimer.hours([2, 5]), [2, 5]);
+  const { device, accessory, platform } = setup(sleepProfile()); t.after(() => device.stop());
+  const sent = []; platform.client.control = async (_id, payload) => sent.push(payload);
+  platform.client.state = async () => ({ ...state(), sleepTimer: { relativeStopTimer: 'UNSET' } });
+  await device.refresh();
+  for (const [hour, label] of [[3, '三'], [5, '五'], [7, '七']]) {
+    const s = accessory.getServiceById(hap.Service.Switch, `native-sleep-timer:${hour}`);
+    assert.equal(s.getCharacteristic(hap.Characteristic.ConfiguredName).value, `除濕機定時${label}小時`);
+    await s.getCharacteristic(hap.Characteristic.On).handleSetRequest(true);
+  }
+  assert.deepEqual(sent, [3, 5, 7].map(relativeHourToStop => ({ sleepTimer: { relativeHourToStop } })));
+});
 test('timer selection survives countdown and restart without switching to a shorter preset', async t => {
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1800000000000 });
   const { device, accessory, platform } = setup(sleepProfile()); t.after(() => device.stop());
@@ -85,19 +100,22 @@ test('simple Siri switch uses configured duration and migrates old defaults whil
   await restored.refresh(); await old.getCharacteristic(hap.Characteristic.On).handleSetRequest(true);
   assert.deepEqual(sent, [{ sleepTimer: { relativeHourToStop: 2 } }]);
 });
-test('dedicated power switch is present alongside the primary dehumidifier and sends real power commands', async t => {
-  const { device, accessory, platform } = setup(); t.after(() => device.stop());
+test('upgrade removes separated power switch and retains 0.1.4 primary Active control', async t => {
+  const { device, accessory, platform } = setup(sleepProfile()); t.after(() => device.stop());
+  accessory.addService(hap.Service.Switch, 'LG 除濕機電源', 'power-control');
+  const restored = new Device(platform, accessory, device.info, device.profile); t.after(() => restored.stop());
+  assert.equal(accessory.getServiceById(hap.Service.Switch, 'power-control'), undefined);
+  const main = accessory.getServiceById(hap.Service.HumidifierDehumidifier, 'main');
+  assert.equal(main.isPrimaryService, true); assert.equal(main.UUID, hap.Service.HumidifierDehumidifier.UUID);
   const sent = []; let power = 'POWER_ON';
-  platform.client.state = async () => ({ ...state(), operation: { dehumidifierOperationMode: power } });
+  platform.client.state = async () => ({ ...state(), operation: { dehumidifierOperationMode: power }, sleepTimer: { relativeStopTimer: 'UNSET' } });
   platform.client.control = async (_id, payload) => { sent.push(payload); power = payload.operation.dehumidifierOperationMode; };
-  const s = accessory.getServiceById(hap.Service.Switch, 'power-control');
-  assert.equal(s.getCharacteristic(hap.Characteristic.ConfiguredName).value, 'LG 除濕機電源');
-  assert.equal(accessory.getServiceById(hap.Service.HumidifierDehumidifier, 'main').isPrimaryService, true);
-  await device.refresh(); await s.getCharacteristic(hap.Characteristic.On).handleSetRequest(false); await device.refresh();
-  assert.equal(await s.getCharacteristic(hap.Characteristic.On).handleGetRequest(), false);
-  await s.getCharacteristic(hap.Characteristic.On).handleSetRequest(true); await device.refresh();
-  assert.equal(await s.getCharacteristic(hap.Characteristic.On).handleGetRequest(), true);
+  await restored.refresh();
+  const c = main.getCharacteristic(hap.Characteristic.Active);
+  await c.handleSetRequest(0); await restored.refresh(); assert.equal(await c.handleGetRequest(), 0);
+  await c.handleSetRequest(1); await restored.refresh(); assert.equal(await c.handleGetRequest(), 1);
   assert.deepEqual(sent, ['POWER_OFF', 'POWER_ON'].map(dehumidifierOperationMode => ({ operation: { dehumidifierOperationMode } })));
+  assert.ok(restored.notification);
 });
 test('old readback and turning another preset off do not cancel a newly selected duration', async t => {
   const { device, accessory, platform } = setup(sleepProfile()); t.after(() => device.stop());
@@ -261,14 +279,14 @@ test('快取配件恢復後保留識別資訊並重新綁定服務', async t => 
 test('舊版配件升級補齊控制項名稱，保留全部服務與使用者改名', async t => {
   const { device, accessory, platform } = setup(); t.after(() => device.stop());
   const services = accessory.services.filter(s => s.UUID !== hap.Service.AccessoryInformation.UUID);
-  assert.equal(services.length, 8);
+  assert.equal(services.length, 7);
   for (const s of services) s.removeCharacteristic(s.getCharacteristic(hap.Characteristic.ConfiguredName));
   const restoredAccessory = hap.Accessory.deserialize(hap.Accessory.serialize(accessory));
   const restored = new Device(platform, restoredAccessory, device.info, device.profile); t.after(() => restored.stop());
   assert.equal(restoredAccessory.UUID, accessory.UUID);
   assert.deepEqual(restoredAccessory.services.map(s => [s.UUID, s.subtype]), accessory.services.map(s => [s.UUID, s.subtype]));
   assert.deepEqual(restoredAccessory.services.filter(s => s.subtype).map(s => s.getCharacteristic(hap.Characteristic.ConfiguredName).value),
-    ['LG 除濕機', '風速 低速', '風速 高速', '模式 智慧除濕', '模式 衣物乾燥', '水箱滿通知事件', 'LG 除濕機 目前濕度', 'LG 除濕機電源']);
+    ['LG 除濕機', '風速 低速', '風速 高速', '模式 智慧除濕', '模式 衣物乾燥', '水箱滿通知事件', 'LG 除濕機 目前濕度']);
   const fan = restoredAccessory.getServiceById(hap.Service.Switch, 'fan:LOW');
   await fan.getCharacteristic(hap.Characteristic.ConfiguredName).handleSetRequest('我的低速');
   const again = new Device(platform, restoredAccessory, device.info, device.profile); t.after(() => again.stop());
