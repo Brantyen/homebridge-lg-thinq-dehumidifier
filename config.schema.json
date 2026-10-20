@@ -5,12 +5,55 @@
   "schema": {
     "type": "object",
     "properties": {
-      "name": { "title": "顯示名稱", "type": "string", "default": "LG 除濕機" },
-      "tokenFile": { "title": "PAT 權杖檔案的絕對路徑（建議）", "type": "string" },
-      "token": { "title": "PAT（未使用權杖檔案時填入）", "type": "string", "format": "password" },
-      "deviceId": { "title": "設備識別碼（有多台除濕機時必填）", "type": "string" },
-      "pollInterval": { "title": "輪詢秒數", "type": "integer", "minimum": 60, "default": 120 },
-      "optionNames": { "title": "選項代碼的自訂正體中文名稱", "type": "object", "additionalProperties": { "type": "string" } }
+      "name": {
+        "title": "顯示名稱",
+        "type": "string",
+        "default": "LG 除濕機"
+      },
+      "tokenFile": {
+        "title": "PAT 權杖檔案的絕對路徑（建議）",
+        "type": "string"
+      },
+      "token": {
+        "title": "PAT（未使用權杖檔案時填入）",
+        "type": "string",
+        "format": "password"
+      },
+      "deviceId": {
+        "title": "設備識別碼（有多台除濕機時必填）",
+        "type": "string"
+      },
+      "pollInterval": {
+        "title": "輪詢秒數",
+        "type": "integer",
+        "minimum": 60,
+        "default": 120
+      },
+      "optionNames": {
+        "title": "選項代碼的自訂正體中文名稱",
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "nativeTimerHours": {
+        "title": "原生定時關機選項（整數小時）",
+        "description": "由除濕機執行，預設 1、2、4、8 小時；實際可用時間以 LG 回應為準。",
+        "type": "array",
+        "default": [
+          1,
+          2,
+          4,
+          8
+        ],
+        "uniqueItems": true,
+        "maxItems": 12,
+        "items": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 24
+        }
+      }
     }
   }
 }
