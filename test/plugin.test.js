@@ -6,6 +6,9 @@ const hap = require('hap-nodejs');
 const { Device, Platform } = require('../index');
 const { ThinQClient } = require('../lib/client');
 const caps = require('../lib/capabilities');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const enumProperty = values => ({ mode: ['r', 'w'], type: 'enum', value: { r: values, w: values } });
 function profile() {
   return { notification: { push: ['WATER_IS_FULL'] }, property: {
@@ -21,11 +24,55 @@ function profile() {
 function state() { return { operation: { dehumidifierOperationMode: 'POWER_ON' }, humidity: { currentHumidity: 63, targetHumidity: 50 }, airFlow: { windStrengthLevel: 'HIGH' }, dehumidifierJobMode: { currentJobMode: 'SMART_HUMIDITY' } }; }
 const log = { info() {}, warn() {}, error() {} };
 function setup(p = profile()) {
-  const platform = { api: { hap }, config: {}, log, interval: 120000, client: { state: async () => state(), control: async () => {} } };
+  const platform = { api: { hap }, config: { timerPresets: [] }, log, interval: 120000, client: { state: async () => state(), control: async () => {} } };
   const accessory = new hap.Accessory('測試除濕機', hap.uuid.generate('unit-test'));
   const device = new Device(platform, accessory, { deviceId: 'test-id', deviceInfo: { modelName: '測試模型' } }, p);
   return { device, accessory, platform };
 }
+
+function timerSetup(t) {
+  const base = setup(); base.device.stop();
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'lg-hap-timer-'));
+  base.platform.api.user = { storagePath: () => directory };
+  base.platform.config.timerPresets = [1, 2];
+  const device = new Device(base.platform, base.accessory, base.device.info, base.device.profile);
+  t.after(() => { device.stop(); fs.rmSync(directory, { recursive: true, force: true }); });
+  return { ...base, device };
+}
+test('timer HomeKit switches replace, cancel and reject arming while powered off', async t => {
+  const { device, accessory, platform } = timerSetup(t); await device.refresh();
+  const one = accessory.getServiceById(hap.Service.Switch, 'off-timer:1').getCharacteristic(hap.Characteristic.On);
+  const two = accessory.getServiceById(hap.Service.Switch, 'off-timer:2').getCharacteristic(hap.Characteristic.On);
+  await one.handleSetRequest(true); assert.equal(device.offTimer.record.minutes, 1);
+  await two.handleSetRequest(true); assert.equal(device.offTimer.record.minutes, 2);
+  await one.handleSetRequest(false); assert.equal(device.offTimer.record.minutes, 2);
+  platform.client.state = async () => ({ ...state(), operation: { dehumidifierOperationMode: 'POWER_OFF' } });
+  await device.refresh(); assert.equal(device.offTimer.record, null);
+  await assert.rejects(one.handleSetRequest(true));
+  platform.client.state = async () => state(); await device.refresh();
+  await one.handleSetRequest(true); device.online = false;
+  await one.handleSetRequest(false); assert.equal(device.offTimer.record, null);
+});
+test('scheduled shutdown uses validated POWER_OFF and confirms state via readback', async t => {
+  const { device, platform } = timerSetup(t); await device.refresh();
+  let actual = 'POWER_ON'; const sent = [];
+  platform.client.state = async () => ({ ...state(), operation: { dehumidifierOperationMode: actual } });
+  platform.client.control = async (_id, payload) => { sent.push(payload); actual = payload.operation.dehumidifierOperationMode; };
+  device.offTimer.set(1);
+  device.offTimer.now = () => device.offTimer.record.deadline;
+  await device.offTimer.fire(device.offTimer.generation);
+  assert.deepEqual(sent, [{ operation: { dehumidifierOperationMode: 'POWER_OFF' } }]);
+  assert.equal(device.offTimer.record, null); assert.equal(device.power(), false);
+});
+test('cancel after queueing prevents scheduled cloud shutdown', async t => {
+  const { device, platform } = timerSetup(t); await device.refresh();
+  let release; device.queue = new Promise(resolve => { release = resolve; });
+  const sent = []; platform.client.control = async (_id, payload) => sent.push(payload);
+  device.offTimer.set(1); device.offTimer.now = () => device.offTimer.record.deadline;
+  const pending = device.offTimer.fire(device.offTimer.generation);
+  device.offTimer.cancel(); release(); await pending;
+  assert.deepEqual(sent, []);
+});
 
 test('濕度範圍、刻度、例外值與模式均依能力檢查', () => {
   assert.deepEqual(caps.command(profile(), 'target', 55), { humidity: { targetHumidity: 55 } });
@@ -177,7 +224,7 @@ test('DD201 模式名稱遷移保留識別與自訂名稱，控制仍送出核�
   const nameOf = subtype => cached.getServiceById(hap.Service.Switch, subtype).getCharacteristic(hap.Characteristic.ConfiguredName).value;
   assert.deepEqual(cached.services.map(s => [s.UUID, s.subtype]), before);
   assert.deepEqual(['SMART_HUMIDITY', 'QUIET_HUMIDITY', 'RAPID_HUMIDITY', 'INTENSIVE_DRY', 'AIR_CLEAN'].map(v => nameOf(`mode:${v}`)),
-    ['模式 智慧除濕 Plus', '模式 靜音除濕', '模式 衣物乾燥', '模式 烘鞋／衣櫥', '模式 AIR_CLEAN（App 未列出）']);
+    ['模式 智慧除濕 Plus', '模式 靜音除濕', '模式 衣物乾燥', '模式 烘鞋／衣櫥', '模式 自動清潔']);
   assert.equal(nameOf('fan:LOW'), '我的低速');
   assert.equal(nameOf('fan:MID'), '風速 中');
   assert.equal(nameOf('fan:POWER'), '風速 Turbo');
