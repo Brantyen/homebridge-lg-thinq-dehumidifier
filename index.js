@@ -149,10 +149,6 @@ class Device {
     if (caps.property(profile, 'current')?.mode?.includes('r')) {
       this.bind(this.service(this.S.HumiditySensor, `${name} 目前濕度`, 'humidity'), this.C.CurrentRelativeHumidity, () => this.humidity('current'));
     }
-    if (target && caps.property(profile, 'current')?.mode?.includes('r')) {
-      this.bind(this.service(this.S.Switch, `${name}電源`, 'power-control'), this.C.On,
-        () => this.power(), on => this.write('power', on ? 'POWER_ON' : 'POWER_OFF'));
-    }
     nativeTimer.bind(this);
     for (const service of [...accessory.services]) {
       if (service.UUID !== this.S.AccessoryInformation.UUID && !this.wanted.has(service)) accessory.removeService(service);
